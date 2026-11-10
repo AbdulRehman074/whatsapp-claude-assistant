@@ -1,0 +1,13 @@
+{
+  "name": "nedtrax-whatsapp-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WhatsApp Business (coexistence via 360dialog) to Claude: sorting, reply drafts, daily summary. One deployment serves up to 3 numbers, each private.",
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "cli": "node --disable-warning=ExperimentalWarning src/cli.js",
+    "test": "node --disable-warning=ExperimentalWarning test/run.js"
+  }
+}
