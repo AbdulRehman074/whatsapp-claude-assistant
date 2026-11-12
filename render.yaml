@@ -3,7 +3,7 @@ services:
   - type: web
     name: whatsapp-assistant
     runtime: node
-    plan: starter
+    plan: 0.5c-512mb
     region: frankfurt
     buildCommand: echo "no build step needed"
     startCommand: npm start
