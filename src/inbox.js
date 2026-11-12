@@ -24,7 +24,7 @@ export const head = (title) => `<!doctype html><html lang="en"><head><meta chars
 <meta name="robots" content="noindex"><meta name="theme-color" content="#0b7a4b"><title>${esc(title)}</title><style>${CSS}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}
 .code{font:14px ui-monospace,Menlo,Consolas,monospace;background:var(--chip);border-radius:8px;padding:8px 10px;word-break:break-all}
-form.row{flex-wrap:wrap}form.row input{min-width:0;flex:1 1 100%}td a{color:var(--accent)}ol.steps{padding-left:22px}ol.steps li{margin:6px 0}</style></head><body>`;
+form.row{flex-wrap:wrap}form.row input{min-width:0;flex:1 1 100%}td a,ul.plain a{color:var(--accent)}ol.steps{padding-left:22px}ol.steps li{margin:6px 0}</style></head><body>`;
 
 export const CSS = `
 :root{--bg:#f4f5f2;--card:#fff;--ink:#1d2320;--muted:#66706a;--line:#e2e5df;--accent:#0b7a4b;--accent-ink:#fff;--urgent:#b3261e;--urgent-bg:#fdeceb;--chip:#eef1ec;--warn-bg:#fff6dc;--warn:#7a5a00}

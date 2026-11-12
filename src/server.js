@@ -9,6 +9,7 @@ import { parseWebhook, setWebhook } from './provider360.js';
 import { handleEvents, draftItem, startLoops } from './engine.js';
 import { renderInbox, renderPrivate, renderSetup, renderMachines, machinesCsv, renderTools } from './inbox.js';
 import { handleMcpHttp } from './mcp.js';
+import { broadcastRoute } from './broadcast.js';
 import { getChannelByMcp } from './db.js';
 import { ensureTopic, sendReminder } from './engine.js';
 
@@ -94,6 +95,11 @@ export function createServer() {
           const q = String(url.searchParams.get('q') || '').slice(0, 80);
           if (sub[0] === 'machines.csv') return send(res, 200, machinesCsv(ch, { days, q }), 'text/csv; charset=utf-8', { 'content-disposition': 'attachment; filename="machines-asked-for.csv"' });
           return send(res, 200, renderMachines(ch, { days, q }));
+        }
+        if (sub[0] === 'broadcast') {
+          const out = await broadcastRoute(ch, req.method, sub.slice(1), url.searchParams, req.method === 'POST' ? await readBody(req) : '');
+          if (typeof out === 'string') return redirect(res, out);
+          return send(res, out[0], out[1], out[2]);
         }
         if (sub[0] === 'tools') {
           ensureTopic(ch);

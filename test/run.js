@@ -172,6 +172,31 @@ assert.ok(/zaterdag/.test(j.result.content[0].text));
 assert.ok(/marked as handled/.test(j.result.content[0].text));
 assert.ok(!db.prepare("SELECT 1 FROM messages WHERE contact = '31655555555'").get(), 'private still never stored');
 assert.equal((await fetch(`${base}/mcp/wrong`, { method: 'POST', body: '{}' })).status, 404);
+// Broadcast: vCard import, keyword lists, opt-out, send through the template
+const vcf = ['BEGIN:VCARD','VERSION:3.0','FN:Alberto Spain Yanmar Vio50','TEL;type=CELL:+34 612 34 56 78','END:VCARD',
+  'BEGIN:VCARD','VERSION:3.0','N:Komatsu Pw180;Alejandro Spain;;;','TEL;type=CELL:0034 699 11 22 33','END:VCARD',
+  'BEGIN:VCARD','VERSION:3.0','FN:Abdelali Mourad Maroc','TEL:+212 6 61 22 33 44','PHOTO;ENCODING=b:AAAA','END:VCARD',
+  'BEGIN:VCARD','VERSION:3.0','FN:Jan Buurman','TEL;type=CELL:06 1111 2222','END:VCARD',
+  'BEGIN:VCARD','VERSION:3.0','FN:Cus Spain Optout','TEL:+34 600 000 001','END:VCARD'].join('\r\n');
+const imp = await fetch(`${base}/inbox/${tok}/broadcast/import`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: vcf });
+assert.ok((await imp.text()).includes('5 contacts'));
+assert.ok(db.prepare("SELECT 1 FROM contacts WHERE phone = '31611112222'").get(), 'Dutch local number gets 31');
+const bhtml = await (await fetch(`${base}/inbox/${tok}/broadcast`)).text();
+assert.ok(bhtml.includes('Spain') && bhtml.includes('Maroc') && bhtml.includes('Contacts: 5') === false);
+await hook(inbound('34600000001', 'Cus', text('STOP')));
+const { getList, recipients } = await import('../src/broadcast.js');
+const spain = db.prepare("SELECT * FROM blists WHERE channel_id = 'mounir' AND name = 'Spain'").get();
+assert.deepEqual(recipients('mounir', spain).map((r) => r.phone).sort(), ['34612345678', '34699112233'], 'Spain list by keyword/prefix, STOP excluded');
+// untick Alejandro
+await fetch(`${base}/inbox/${tok}/broadcast/list/${spain.id}`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  body: `name=Spain&keywords=${encodeURIComponent(spain.keywords)}&all=34612345678,34699112233,34600000001&keep=34612345678` });
+assert.deepEqual(recipients('mounir', getList('mounir', spain.id)).map((r) => r.phone), ['34612345678']);
+const sres = await fetch(`${base}/inbox/${tok}/broadcast/send`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  body: `list=${spain.id}&text=${encodeURIComponent('New: Volvo EC220E\n2018, 6400 h')}` });
+assert.equal(sres.status, 303);
+await new Promise((r) => setTimeout(r, 100));
+const bs = db.prepare('SELECT * FROM bsends ORDER BY id DESC').get();
+assert.equal(bs.sent, 1); assert.equal(bs.status, 'done'); assert.ok(bs.text.includes(' · '), 'line breaks flattened');
 console.log('\nNEW FEATURES OK');
 
 if (process.argv.includes('--keep')) { console.log(`\nServer kept running: ${base}/inbox/${tok}`); }

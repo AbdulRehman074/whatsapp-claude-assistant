@@ -2,6 +2,7 @@ import { db, now, saveMessage, isPrivate, recentMessages, updateChannel, listCha
 import { classifyAndDraft, dailySummary } from './claude.js';
 import { sendText, sendTemplate } from './provider360.js';
 import { config } from './config.js';
+import { STOP_RE, optOut } from './broadcast.js';
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -19,6 +20,7 @@ export function handleEvents(channel, events) {
         continue;
       }
       if (isPrivate(channel.id, e.from)) continue; // private contact: never stored, never sent to Claude
+      if (STOP_RE.test(e.text || '')) { optOut(channel.id, e.from); log(`opt-out from broadcasts: ${channel.id}`); continue; }
       saveMessage({ id: e.id, channelId: channel.id, contact: e.from, direction: 'in', type: e.type, text: e.text, ts: e.ts });
       const open = db.prepare("SELECT * FROM items WHERE channel_id = ? AND contact = ? AND status IN ('pending','open','personal') ORDER BY id DESC LIMIT 1")
         .get(channel.id, e.from);

@@ -71,6 +71,7 @@ async function call(apiKey, method, path, body) {
   return json;
 }
 
+export const call360 = (...a) => call(...a);
 export const setWebhook = (apiKey, url) => call(apiKey, 'POST', '/v1/configs/webhook', { url });
 
 export const sendText = (apiKey, to, body) => call(apiKey, 'POST', '/messages', {
