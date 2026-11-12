@@ -12,7 +12,7 @@ import { handleMcpHttp } from './mcp.js';
 import { getChannelByMcp } from './db.js';
 import { ensureTopic, sendReminder } from './engine.js';
 
-const MAX_BODY = 2 * 1024 * 1024;
+const MAX_BODY = 12 * 1024 * 1024; // contact imports can be large
 
 function readBody(req) {
   return new Promise((resolve, reject) => {

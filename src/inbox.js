@@ -18,9 +18,9 @@ function waitFor(ts) {
   const h = (Date.now() - ts) / 3600000;
   return h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} days`;
 }
-const navFor = (ch, here) => `<nav>${[['', 'Waiting'], ['/machines', 'Machines'], ['/tools', 'Reminders & Claude'], ['/private', 'Private']]
+export const navFor = (ch, here) => `<nav>${[['', 'Waiting'], ['/machines', 'Machines'], ['/broadcast', 'Broadcast'], ['/tools', 'Reminders & Claude'], ['/private', 'Private']]
   .map(([p, l]) => `<a href="/inbox/${ch.inbox_token}${p}"${p === here ? ' style="text-decoration:underline"' : ''}>${l}</a>`).join('')}</nav>`;
-const head = (title) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+export const head = (title) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><meta name="theme-color" content="#0b7a4b"><title>${esc(title)}</title><style>${CSS}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}
 .code{font:14px ui-monospace,Menlo,Consolas,monospace;background:var(--chip);border-radius:8px;padding:8px 10px;word-break:break-all}
@@ -32,7 +32,7 @@ export const CSS = `
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 header{position:sticky;top:0;z-index:2;background:var(--bg);padding:14px 16px 10px;border-bottom:1px solid var(--line)}
 header h1{font-size:19px;margin:0}header p{margin:2px 0 0;color:var(--muted);font-size:14px}
-header nav{margin-top:8px;display:flex;gap:14px;font-size:14px}header a{color:var(--accent);text-decoration:none;font-weight:600}
+header nav{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px}header a{color:var(--accent);text-decoration:none;font-weight:600}
 main{max-width:680px;margin:0 auto;padding:12px 16px 80px}
 h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:22px 0 8px}
 h2.urgent{color:var(--urgent)}
