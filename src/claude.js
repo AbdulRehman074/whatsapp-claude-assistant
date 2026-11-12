@@ -92,12 +92,20 @@ export async function classifyAndDraft(channel, msgs, { name, contact }) {
   const user = `Contact: ${name || 'unknown name'} (+${contact})\nConversation, oldest first; the last customer messages are the new ones:\n\n${fmtConversation(channel, msgs, name)}`;
   const json = await messagesApi({
     model: config.model, max_tokens: 1200, system,
-    tools: [TOOL], tool_choice: { type: 'tool', name: TOOL.name },
-    messages: [{ role: 'user', content: user }],
+    tools: [TOOL], tool_choice: { type: 'auto' },
+    messages: [{ role: 'user', content: user + '\n\nAlways answer by calling the file_message tool exactly once.' }],
   });
   const block = (json.content || []).find((b) => b.type === 'tool_use');
-  if (!block) throw new Error('Claude returned no tool_use block');
-  const r = block.input;
+  let r = block?.input;
+  if (!r) {
+    // Fallback: some models answer in text; take the first JSON object in it.
+    const text = (json.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+    const m = text.match(/\{[\s\S]*\}/);
+    try { r = m ? JSON.parse(m[0]) : null; } catch { r = null; }
+  }
+  if (!r) throw new Error('Claude returned no structured result');
+  r.needs_info = Array.isArray(r.needs_info) ? r.needs_info : [];
+  r.draft = typeof r.draft === 'string' ? r.draft : '';
   if (!CATEGORIES[r.category]) r.category = 'other_business';
   if (r.category === 'machine_inquiry' || r.category === 'supplier') r.urgent = true;
   if (r.category === 'spam_ads' || r.category === 'personal') r.draft = '';
