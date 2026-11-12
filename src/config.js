@@ -30,6 +30,7 @@ export const config = {
   d360Base: (env.D360_BASE_URL || 'https://waba-v2.360dialog.io').replace(/\/$/, ''),
   mockClaude: env.MOCK_CLAUDE === '1',
   dryRunSend: env.DRY_RUN_SEND === '1',
+  ntfyBase: (env.NTFY_BASE || 'https://ntfy.sh').replace(/\/$/, ''),
   dbPath: env.DB_PATH || './data/assistant.db',
   knowledgeDir: env.KNOWLEDGE_DIR || './knowledge',
 };

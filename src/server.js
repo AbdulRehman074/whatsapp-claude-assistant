@@ -7,7 +7,10 @@ import { createSummaryTemplate } from './provider360.js';
 import { sendSummary } from './engine.js';
 import { parseWebhook, setWebhook } from './provider360.js';
 import { handleEvents, draftItem, startLoops } from './engine.js';
-import { renderInbox, renderPrivate, renderSetup } from './inbox.js';
+import { renderInbox, renderPrivate, renderSetup, renderMachines, machinesCsv, renderTools } from './inbox.js';
+import { handleMcpHttp } from './mcp.js';
+import { getChannelByMcp } from './db.js';
+import { ensureTopic, sendReminder } from './engine.js';
 
 const MAX_BODY = 2 * 1024 * 1024;
 
@@ -47,6 +50,15 @@ export function createServer() {
         return;
       }
 
+      // --- Claude connector (MCP): /mcp/<token>
+      if (parts[0] === 'mcp' && parts.length === 2) {
+        const ch = getChannelByMcp(parts[1]);
+        if (!ch) return send(res, 404, 'not found', 'text/plain');
+        const [status, body, headers] = handleMcpHttp(ch, req.method, req.method === 'POST' ? await readBody(req) : '');
+        res.writeHead(status, { 'cache-control': 'no-store', ...headers });
+        return res.end(body ?? '');
+      }
+
       // --- One-time setup page: /setup/<setupToken>
       if (parts[0] === 'setup' && parts.length === 2) {
         const ch = getChannelBy('setup_token', parts[1]);
@@ -76,6 +88,30 @@ export function createServer() {
         if (sub[0] === 'version') {
           const v = db.prepare('SELECT COUNT(*) n, MAX(updated_at) m FROM items WHERE channel_id = ?').get(ch.id);
           return send(res, 200, `${v.n}-${v.m}`, 'text/plain');
+        }
+        if (sub[0] === 'machines' || sub[0] === 'machines.csv') {
+          const days = [7, 30, 90, 365].includes(Number(url.searchParams.get('days'))) ? Number(url.searchParams.get('days')) : 30;
+          const q = String(url.searchParams.get('q') || '').slice(0, 80);
+          if (sub[0] === 'machines.csv') return send(res, 200, machinesCsv(ch, { days, q }), 'text/csv; charset=utf-8', { 'content-disposition': 'attachment; filename="machines-asked-for.csv"' });
+          return send(res, 200, renderMachines(ch, { days, q }));
+        }
+        if (sub[0] === 'tools') {
+          ensureTopic(ch);
+          if (req.method === 'POST' && sub[1] === 'test') {
+            try {
+              const r = await sendReminder(ch, { force: true });
+              if (r.skipped) await (await import('./engine.js')).pushNotify(ch, { title: 'Test reminder', body: 'Reminders work. Nobody is waiting for an answer right now.', click: `${config.publicUrl}/inbox/${ch.inbox_token}` });
+              return send(res, 200, renderTools(ch, 'Test sent. Did a notification arrive on your phone?'));
+            } catch (e) { return send(res, 200, renderTools(ch, 'Could not send: ' + e.message)); }
+          }
+          if (req.method === 'POST' && sub[1] === 'save') {
+            const f = parseForm(await readBody(req));
+            const times = String(f.remind_times || '').split(',').map((x) => x.trim()).filter((x) => /^\d\d:\d\d$/.test(x)).join(',');
+            const hrs = Math.max(0, Math.min(72, Number(f.remind_after_hours) || 0));
+            updateChannel(ch.id, { remind_times: times, remind_after_hours: hrs });
+            return send(res, 200, renderTools(getChannelBy('id', ch.id), times ? `Saved. Reminders at ${times.replace(/,/g, ', ')}.` : 'Saved. Reminders are off (no times).'));
+          }
+          return send(res, 200, renderTools(ch));
         }
         if (sub[0] === 'private') {
           if (req.method === 'POST' && sub[1] === 'remove') { removePrivate(ch.id, parseForm(await readBody(req)).phone); return redirect(res, `/inbox/${ch.inbox_token}/private`); }
@@ -157,6 +193,7 @@ export function createServer() {
             try { const r = await sendSummary(ch, { force: true }); return back(r.skipped ? 'Not sent: ' + r.skipped : 'Summary sent. Check WhatsApp.', ch.id); }
             catch (e) { return back('Summary not sent: ' + e.message.slice(0, 160) + ' (Is the template approved yet?)', ch.id); }
           }
+          if (act === 'drafts') { updateChannel(ch.id, { drafts_enabled: ch.drafts_enabled ? 0 : 1 }); return back(ch.drafts_enabled ? 'Reply drafts switched off.' : 'Reply drafts switched on.', ch.id); }
           if (act === 'new-inbox') { updateChannel(ch.id, { inbox_token: token(), inbox_revealed: 0 }); return back('New inbox link created. The owner opens the setup link again to get it.', ch.id); }
           if (act === 'test') {
             const sample = 'Hello, is the machine from your advert still available? What is your best price and can you deliver to Belgium?';

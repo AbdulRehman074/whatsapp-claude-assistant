@@ -84,7 +84,7 @@ export const sendTemplate = (apiKey, to, name, lang, params) => call(apiKey, 'PO
 });
 
 // Daily summary template (category UTILITY). Submitted once per number; Meta usually reviews it within minutes to 24 hours.
-export const SUMMARY_TEMPLATE_TEXT = 'Your WhatsApp summary for {{1}}: {{2}} business chats today, {{3}} urgent still open. Your reply drafts are ready here: {{4}}';
+export const SUMMARY_TEMPLATE_TEXT = 'Your WhatsApp summary for {{1}}: {{2}} business chats today, {{3}} urgent still open. Customers waiting and details: {{4}}';
 export const createSummaryTemplate = (apiKey, name = 'daily_summary', lang = 'en') => call(apiKey, 'POST', '/v1/configs/templates', {
   name, category: 'UTILITY', language: lang,
   components: [{ type: 'BODY', text: SUMMARY_TEMPLATE_TEXT,

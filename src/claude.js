@@ -13,25 +13,35 @@ export const CATEGORIES = {
   personal: 'Looks personal',
 };
 
-const TOOL = {
-  name: 'file_message',
-  description: 'File the latest customer message(s) for the owner: sort it, flag urgency and write a reply draft.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      category: { type: 'string', enum: Object.keys(CATEGORIES) },
-      urgent: { type: 'boolean', description: 'true for machine/price inquiries, suppliers, and anything time-critical (complaint, payment, pickup today).' },
-      language: { type: 'string', description: 'Language of the customer\'s latest message as an ISO code: en, nl, fr, es, de, ar, ...' },
-      source: { type: 'string', enum: ['direct', 'website_or_marketplace'], description: 'website_or_marketplace when the message came through a machine listing site (contains a listing link, a reference number or the site\'s standard wording).' },
-      summary: { type: 'string', description: 'One line in English for the owner: who, what they want, key details (machine, model, price asked, deadline). Max 20 words.' },
-      draft: { type: 'string', description: 'Reply draft in the customer\'s language, WhatsApp style. Empty string for spam_ads and personal.' },
-      needs_info: { type: 'array', items: { type: 'string' }, description: 'Things the owner must check or fill in before sending (in English), matching the [square bracket] placeholders in the draft.' },
-    },
-    required: ['category', 'urgent', 'language', 'source', 'summary', 'draft', 'needs_info'],
-  },
+const BASE_PROPS = {
+  category: { type: 'string', enum: Object.keys(CATEGORIES) },
+  urgent: { type: 'boolean', description: 'true for machine/price inquiries, suppliers, and anything time-critical (complaint, payment, pickup today).' },
+  language: { type: 'string', description: 'Language of the customer\'s latest message as an ISO code: en, nl, fr, es, de, ar, ru, ...' },
+  source: { type: 'string', enum: ['direct', 'website_or_marketplace'], description: 'website_or_marketplace when the message came through a machine listing site (contains a listing link, a reference number or the site\'s standard wording).' },
+  summary: { type: 'string', description: 'One line in English for the owner: who, what they want, key details (machine, model, price asked, deadline). Max 20 words.' },
+  needs_reply: { type: 'boolean', description: 'true when the customer is waiting for an answer from the owner (a question, a request, an offer). false when nothing needs answering (thanks, ok, emoji, a closed topic, spam, personal).' },
+  country: { type: 'string', description: 'Customer country in English if clear from the conversation or the phone country code, else empty string.' },
+  machines: { type: 'array', description: 'Machines the customer asks about, wants to buy or offers in the NEW messages. Empty if none.',
+    items: { type: 'object', properties: {
+      machine: { type: 'string', description: 'Make, model and type as written, e.g. "Volvo EC220 excavator" or "mini excavator 5 t".' },
+      details: { type: 'string', description: 'Extra facts the customer gave: year, hours, budget, attachments, delivery country. Empty string if none.' } },
+      required: ['machine', 'details'] } },
 };
+const DRAFT_PROPS = {
+  draft: { type: 'string', description: 'Reply draft in the customer\'s language, WhatsApp style. Empty string for spam_ads and personal.' },
+  needs_info: { type: 'array', items: { type: 'string' }, description: 'Things the owner must check or fill in before sending (in English), matching the [square bracket] placeholders in the draft.' },
+};
+function toolFor(drafts) {
+  const properties = drafts ? { ...BASE_PROPS, ...DRAFT_PROPS } : BASE_PROPS;
+  return {
+    name: 'file_message',
+    description: drafts ? 'File the latest customer message(s) for the owner: sort it, flag urgency, note machines and write a reply draft.'
+      : 'File the latest customer message(s) for the owner: sort it, flag urgency, say if it needs a reply and note the machines asked for.',
+    input_schema: { type: 'object', properties, required: Object.keys(properties) },
+  };
+}
 
-const RULES = `You work inside the WhatsApp Business number of {OWNER}. Every new customer message is passed to you with the recent conversation. You sort it and prepare a reply draft. {OWNER} reads your draft on his phone, edits it if needed and sends it himself from the WhatsApp Business app. You never send anything.
+const RULES = `You work inside the WhatsApp Business number of {OWNER}. Every new customer message is passed to you with the recent conversation. You sort it, decide whether the customer is still waiting for an answer, and note which machines they ask about (and, only when asked, prepare a reply draft). {OWNER} chats with customers himself from the WhatsApp Business app. You never send anything.
 
 Sorting:
 - machine_inquiry: someone asking about a machine, its price, availability, specs, photos, a viewing, or making an offer. Includes inquiries forwarded from machine listing websites and marketplaces.
@@ -43,7 +53,9 @@ Sorting:
 - personal: family, friends, private life. No draft and a neutral summary without private details (for example "Personal message from Ahmed").
 Urgent: always for machine_inquiry and supplier; also anything time-critical.
 
-Drafting:
+Machines: list every machine the customer asks about or offers in the new messages, with the details they gave. Use the customer's own words for make and model.
+
+Drafting (only when the tool asks for a draft):
 - Reply in the same language as the customer's latest message (English, Dutch, French, Spanish, or whatever they used).
 - Friendly and professional, short, WhatsApp style. No subject lines, no long formal letters. One or two short paragraphs at most.
 - Sign off with "{OWNER}" only when a sign-off feels natural; most WhatsApp replies need none.
@@ -90,9 +102,10 @@ export async function classifyAndDraft(channel, msgs, { name, contact }) {
     { type: 'text', text: `BUSINESS KNOWLEDGE\n\n${knowledgeFor(channel)}`, cache_control: { type: 'ephemeral' } },
   ];
   const user = `Contact: ${name || 'unknown name'} (+${contact})\nConversation, oldest first; the last customer messages are the new ones:\n\n${fmtConversation(channel, msgs, name)}`;
+  const drafts = !!channel.drafts_enabled;
   const json = await messagesApi({
-    model: config.model, max_tokens: 1200, system,
-    tools: [TOOL], tool_choice: { type: 'auto' },
+    model: config.model, max_tokens: drafts ? 1400 : 800, system,
+    tools: [toolFor(drafts)], tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content: user + '\n\nAlways answer by calling the file_message tool exactly once.' }],
   });
   const block = (json.content || []).find((b) => b.type === 'tool_use');
@@ -105,10 +118,12 @@ export async function classifyAndDraft(channel, msgs, { name, contact }) {
   }
   if (!r) throw new Error('Claude returned no structured result');
   r.needs_info = Array.isArray(r.needs_info) ? r.needs_info : [];
-  r.draft = typeof r.draft === 'string' ? r.draft : '';
+  r.draft = drafts && typeof r.draft === 'string' ? r.draft : '';
+  r.machines = Array.isArray(r.machines) ? r.machines.filter((m) => m && m.machine) : [];
+  r.needs_reply = r.needs_reply !== false;
   if (!CATEGORIES[r.category]) r.category = 'other_business';
   if (r.category === 'machine_inquiry' || r.category === 'supplier') r.urgent = true;
-  if (r.category === 'spam_ads' || r.category === 'personal') r.draft = '';
+  if (r.category === 'spam_ads' || r.category === 'personal') { r.draft = ''; r.needs_reply = false; }
   return r;
 }
 

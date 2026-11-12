@@ -127,5 +127,52 @@ assert.ok((await (await fetch(`${base}/setup/${n1.setup_token}`)).text()).includ
 await fetch(`${base}/inbox/${n1.inbox_token}`);
 assert.ok(!(await (await fetch(`${base}/setup/${n1.setup_token}`)).text()).includes(`/inbox/${n1.inbox_token}`));
 
+// ---- Nov 2026 rework: no drafts, waiting list, machine requests, reminders, Claude connector ----
+const { listRequests, ensureMcpToken } = await import('../src/db.js');
+const { sendReminder, ensureTopic } = await import('../src/engine.js');
+const mch = getChannelBy('id', 'mounir');
+assert.equal(mch.drafts_enabled, 0, 'drafts are off by default');
+assert.equal(by('31612340001').draft, '', 'no draft written when drafts are off');
+const reqs = listRequests('mounir');
+assert.ok(reqs.some((r) => /volvo/i.test(r.machine) && r.contact === '31612340001'), 'machine request saved');
+assert.ok(reqs.some((r) => /john deere/i.test(r.machine)));
+// a "thanks" with nothing to answer closes itself
+await hook(inbound('31612340005', 'Transport BV', text('Thanks')));
+await processPending();
+assert.equal(db.prepare("SELECT status, done_reason FROM items WHERE contact = '31612340005'").get().done_reason, 'no_reply_needed');
+const ihtml = await (await fetch(`${base}/inbox/${tok}`)).text();
+assert.ok(ihtml.includes('Open chat in WhatsApp') && ihtml.includes('waiting'), 'inbox shows waiting cards without drafts');
+const mhtml = await (await fetch(`${base}/inbox/${tok}/machines?days=30&q=volvo`)).text();
+assert.ok(mhtml.includes('Volvo') && !mhtml.includes('John Deere'), 'machines page filters');
+const csv = await (await fetch(`${base}/inbox/${tok}/machines.csv?days=30`)).text();
+assert.ok(csv.includes('"Machine"') && /Volvo/.test(csv));
+const thtml = await (await fetch(`${base}/inbox/${tok}/tools`)).text();
+assert.ok(thtml.includes('ntfy') && thtml.includes('/mcp/'), 'tools page shows ntfy topic and connector link');
+const rem = await sendReminder(getChannelBy('id', 'mounir'), { force: true });
+assert.ok(rem.dryRun && /Jan de Vries/.test(rem.body), 'reminder lists waiting customers');
+await fetch(`${base}/inbox/${tok}/tools/save`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'remind_times=08:30, 16:00, bad&remind_after_hours=2' });
+assert.equal(getChannelBy('id', 'mounir').remind_times, '08:30,16:00');
+// Claude connector (MCP)
+const mtok = getChannelBy('id', 'mounir').mcp_token;
+const rpc = async (body) => { const r = await fetch(`${base}/mcp/${mtok}`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify(body) }); return [r.status, r.status === 200 ? await r.json() : null]; };
+let [st, j] = await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+assert.equal(j.result.protocolVersion, '2025-06-18');
+[st] = await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' }); assert.equal(st, 202);
+[, j] = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+assert.ok(j.result.tools.some((t) => t.name === 'whatsapp_overview') && !j.result.tools[0].run);
+[, j] = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'whatsapp_overview', arguments: {} } });
+assert.ok(/WAITING/.test(j.result.content[0].text) && /Jan de Vries/.test(j.result.content[0].text));
+[, j] = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'search_whatsapp', arguments: { query: 'zaterdag' } } });
+assert.ok(/Jan de Vries/.test(j.result.content[0].text) && !/Tom Baker/.test(j.result.content[0].text));
+[, j] = await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'list_machine_requests', arguments: { search: 'deere' } } });
+assert.ok(/John Deere/.test(j.result.content[0].text));
+[, j] = await rpc({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_conversation', arguments: { customer: '+31 6 1234 0001' } } });
+assert.ok(/zaterdag/.test(j.result.content[0].text));
+[, j] = await rpc({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'mark_handled', arguments: { customer: 'Tom Baker' } } });
+assert.ok(/marked as handled/.test(j.result.content[0].text));
+assert.ok(!db.prepare("SELECT 1 FROM messages WHERE contact = '31655555555'").get(), 'private still never stored');
+assert.equal((await fetch(`${base}/mcp/wrong`, { method: 'POST', body: '{}' })).status, 404);
+console.log('\nNEW FEATURES OK');
+
 if (process.argv.includes('--keep')) { console.log(`\nServer kept running: ${base}/inbox/${tok}`); }
 else { server.close(); console.log('\nALL TESTS PASSED'); process.exit(0); }

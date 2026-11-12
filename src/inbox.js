@@ -1,4 +1,4 @@
-import { db, recentMessages, listPrivate } from './db.js';
+import { db, recentMessages, listPrivate, listRequests, ensureMcpToken } from './db.js';
 import { CATEGORIES } from './claude.js';
 import { config } from './config.js';
 
@@ -13,6 +13,18 @@ function ago(ts) {
   if (h < 24) return `${h} h ago`;
   return new Date(ts).toLocaleDateString('en-GB', { timeZone: config.timezone, day: 'numeric', month: 'short' });
 }
+
+function waitFor(ts) {
+  const h = (Date.now() - ts) / 3600000;
+  return h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} days`;
+}
+const navFor = (ch, here) => `<nav>${[['', 'Waiting'], ['/machines', 'Machines'], ['/tools', 'Reminders & Claude'], ['/private', 'Private']]
+  .map(([p, l]) => `<a href="/inbox/${ch.inbox_token}${p}"${p === here ? ' style="text-decoration:underline"' : ''}>${l}</a>`).join('')}</nav>`;
+const head = (title) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><meta name="theme-color" content="#0b7a4b"><title>${esc(title)}</title><style>${CSS}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}
+.code{font:14px ui-monospace,Menlo,Consolas,monospace;background:var(--chip);border-radius:8px;padding:8px 10px;word-break:break-all}
+form.row{flex-wrap:wrap}form.row input{min-width:0;flex:1 1 100%}td a{color:var(--accent)}ol.steps{padding-left:22px}ol.steps li{margin:6px 0}</style></head><body>`;
 
 export const CSS = `
 :root{--bg:#f4f5f2;--card:#fff;--ink:#1d2320;--muted:#66706a;--line:#e2e5df;--accent:#0b7a4b;--accent-ink:#fff;--urgent:#b3261e;--urgent-bg:#fdeceb;--chip:#eef1ec;--warn-bg:#fff6dc;--warn:#7a5a00}
@@ -56,12 +68,15 @@ function card(ch, it) {
     it.category ? `<span class="chip">${esc(CATEGORIES[it.category] || it.category)}</span>` : '',
     it.language ? `<span class="chip">${esc(LANGS[it.language] || it.language)}</span>` : '',
     it.source === 'website_or_marketplace' ? '<span class="chip">Via website</span>' : '',
-    done ? `<span class="chip">${it.done_reason === 'replied' ? 'You replied' : it.done_reason === 'spam' ? 'Spam' : 'Done'}</span>` : '',
+    done ? `<span class="chip">${{ replied: 'You replied', spam: 'Spam', no_reply_needed: 'No answer needed' }[it.done_reason] || 'Handled'}</span>` : '',
   ].join('');
   const convo = personal ? '' : `<details><summary>Show messages (${msgs.length})</summary>${msgs.map((m) => `<div class="msg ${m.direction}">${esc(m.text)}</div>`).join('')}</details>`;
   let body = '';
   if (personal) {
     body = `<div class="btns"><button data-act="private">Private: always skip</button><button data-act="business">It's business</button></div>`;
+  } else if (!done && !ch.drafts_enabled) {
+    body = `<div class="btns"><a class="btn primary" href="https://wa.me/${esc(it.contact)}">Open chat in WhatsApp</a>
+        <button data-act="done">Handled</button><button data-act="private" class="quiet">Private</button></div>`;
   } else if (!done) {
     body = `${it.error ? `<div class="err">Draft failed: ${esc(it.error)}. Tap "Redo draft" or reply in WhatsApp.</div>` : ''}
       ${needs.length ? `<div class="need"><b>Check before sending:</b> ${needs.map(esc).join(' · ')}</div>` : ''}
@@ -73,7 +88,7 @@ function card(ch, it) {
       </div>`;
   }
   return `<article class="card ${it.urgent && !done ? 'urgent' : ''}" data-id="${it.id}" data-phone="${esc(it.contact)}">
-    <div class="top"><div><div class="who">${esc(it.name || 'Unknown')}</div><div class="num">+${esc(it.contact)}</div></div><div class="when">${ago(it.last_msg_ts)}</div></div>
+    <div class="top"><div><div class="who">${esc(it.name || 'Unknown')}</div><div class="num">+${esc(it.contact)}</div></div><div class="when">${!done && !personal ? `waiting ${waitFor(it.last_msg_ts)}` : ago(it.last_msg_ts)}</div></div>
     <div class="chips">${chips}</div><div class="sum">${esc(it.summary || '')}</div>${convo}${body}</article>`;
 }
 
@@ -101,12 +116,12 @@ export function renderInbox(ch) {
   const section = (title, list, cls = '') => list.length ? `<h2 class="${cls}">${title} (${list.length})</h2>${list.map((r) => card(ch, r)).join('')}` : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><meta name="theme-color" content="#0b7a4b"><title>${esc(ch.label)}</title><style>${CSS}</style></head><body>
-<header><h1>${esc(ch.label)}</h1><p>${urgent.length} urgent · ${other.length} other open${pending.length ? ` · ${pending.length} new being prepared` : ''}</p>
-<nav><a href="">Refresh</a><a href="/inbox/${ch.inbox_token}/private">Private contacts</a></nav></header>
-<main>${section('Urgent', urgent, 'urgent')}${section('Other open', other)}
-${pending.length ? `<h2>Being prepared (${pending.length})</h2>${pending.map((r) => `<div class="card"><div class="who">${esc(r.name || '+' + r.contact)}</div><div class="num">New message, draft ready in about a minute</div></div>`).join('')}` : ''}
-${!open.length && !pending.length ? '<p class="empty">Nothing open. All caught up.</p>' : ''}
-${personal.length ? `<details><summary>Looks personal (${personal.length}), not shown in drafts</summary>${personal.map((r) => card(ch, r)).join('')}</details>` : ''}
+<header><h1>${esc(ch.label)}</h1><p>${open.length ? `${open.length} waiting for your answer (${urgent.length} urgent)` : 'Nobody waiting'}${pending.length ? ` · ${pending.length} new being read` : ''}</p>
+${navFor(ch, '')}</header>
+<main>${section('Urgent, waiting for your answer', urgent, 'urgent')}${section(urgent.length ? 'Also waiting' : 'Waiting for your answer', other)}
+${pending.length ? `<h2>Being prepared (${pending.length})</h2>${pending.map((r) => `<div class="card"><div class="who">${esc(r.name || '+' + r.contact)}</div><div class="num">New message, ready in about a minute</div></div>`).join('')}` : ''}
+${!open.length && !pending.length ? '<p class="empty">Nobody is waiting for an answer. All caught up.</p>' : ''}
+${personal.length ? `<details><summary>Looks personal (${personal.length})</summary>${personal.map((r) => card(ch, r)).join('')}</details>` : ''}
 ${done.length ? `<details><summary>Handled in the last 24 hours (${done.length})</summary>${done.map((r) => card(ch, r)).join('')}</details>` : ''}
 </main><script>${SCRIPT(ch.inbox_token)}</script></body></html>`;
 }
@@ -115,7 +130,7 @@ export function renderPrivate(ch, msg = '') {
   const list = listPrivate(ch.id);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>Private contacts</title><style>${CSS}</style></head><body><header><h1>Private contacts</h1><p>Messages from these numbers are never read, stored or sent to Claude.</p>
-<nav><a href="/inbox/${ch.inbox_token}">Back to inbox</a></nav></header><main>
+${navFor(ch, '/private')}</header><main>
 ${msg ? `<div class="need">${esc(msg)}</div>` : ''}
 <form class="row" method="post" action="/inbox/${ch.inbox_token}/private"><input name="phones" placeholder="Numbers with country code, e.g. +31 6 1234 5678" required><button class="btn primary" style="flex:0 0 auto">Add</button></form>
 <p class="quiet" style="font-size:14px">You can paste many numbers at once, separated by commas or new lines.</p>
@@ -141,4 +156,74 @@ export function renderSetup(ch, state = {}) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>Connect ${esc(ch.label)}</title><style>${CSS}</style></head><body><header><h1>Connect ${esc(ch.label)}</h1><p>WhatsApp assistant</p></header><main>
 ${state.error ? `<div class="err">${esc(state.error)}</div>` : ''}${body}</main></body></html>`;
+}
+
+// ---------- machines customers asked for ----------
+export function machineRows(ch, days, q) {
+  let rows = listRequests(ch.id, days ? Date.now() - days * 86400000 : 0);
+  if (q) { const l = q.toLowerCase(); rows = rows.filter((r) => [r.machine, r.details, r.name, r.country, r.contact].join(' ').toLowerCase().includes(l)); }
+  return rows;
+}
+const dstr = (ts) => new Date(ts).toLocaleDateString('en-GB', { timeZone: config.timezone, day: '2-digit', month: 'short', year: 'numeric' });
+
+export function renderMachines(ch, { days = 30, q = '' } = {}) {
+  const rows = machineRows(ch, days, q);
+  const base = `/inbox/${ch.inbox_token}/machines`;
+  const opt = (d, l) => `<option value="${d}"${Number(days) === d ? ' selected' : ''}>${l}</option>`;
+  return `${head('Machines asked for')}<header><h1>Machines asked for</h1><p>Every machine customers asked about on WhatsApp</p>${navFor(ch, '/machines')}</header><main>
+<form class="row" method="get" action="${base}"><input name="q" value="${esc(q)}" placeholder="Search: excavator, Komatsu, Spain…">
+<select name="days" style="border-radius:10px;border:1px solid var(--line);padding:8px;font:inherit;background:var(--card);color:var(--ink)">${opt(7, '7 days')}${opt(30, '30 days')}${opt(90, '90 days')}${opt(365, '1 year')}</select>
+<button>Show</button></form>
+<p><a class="btn" href="${base}.csv?days=${days}&q=${encodeURIComponent(q)}">Download for Excel</a></p>
+<h2>${rows.length} request(s)</h2>
+${rows.length ? `<div class="card" style="padding:4px 8px;overflow-x:auto"><table><tr><th>Date</th><th>Machine</th><th>Customer</th></tr>
+${rows.map((r) => `<tr><td style="white-space:nowrap">${esc(dstr(r.last_ts))}</td><td><b>${esc(r.machine)}</b>${r.details ? `<br><span class="quiet">${esc(r.details)}</span>` : ''}</td>
+<td><a href="https://wa.me/${esc(r.contact)}">${esc(r.name || '+' + r.contact)}</a>${r.country ? `<br><span class="quiet">${esc(r.country)}</span>` : ''}</td></tr>`).join('')}</table></div>`
+    : '<p class="empty">No machine requests yet in this period. New ones appear here automatically.</p>'}
+</main></body></html>`;
+}
+
+export function machinesCsv(ch, { days = 30, q = '' } = {}) {
+  const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [['Date', 'Machine', 'Details', 'Customer', 'Phone', 'Country', 'First asked'].map(cell).join(';')];
+  for (const r of machineRows(ch, days, q)) lines.push([dstr(r.last_ts), r.machine, r.details, r.name, '+' + r.contact, r.country, dstr(r.first_ts)].map(cell).join(';'));
+  return '\ufeff' + lines.join('\r\n'); // BOM + semicolons: opens correctly in Dutch Excel
+}
+
+// ---------- reminders (ntfy) and the Claude connector ----------
+export function renderTools(ch, msg = '') {
+  const mcpUrl = `${config.publicUrl}/mcp/${ensureMcpToken(ch)}`;
+  const base = `/inbox/${ch.inbox_token}/tools`;
+  return `${head('Reminders & Claude')}<header><h1>Reminders & Claude</h1><p>Set up once on your phone</p>${navFor(ch, '/tools')}</header><main>
+${msg ? `<div class="need">${esc(msg)}</div>` : ''}
+<section class="card"><div class="who">1. Reminders on your phone</div>
+<p>When customers are still waiting for your answer, your phone shows a notification with their names. Tap it to open this page.</p>
+<ol class="steps"><li>Install the free app <b>ntfy</b> from the App Store (iPhone) or Play Store (Android).</li>
+<li>Open it, tap <b>+</b>, and type this exact name as the topic:</li></ol>
+<div class="code" id="topic">${esc(ch.ntfy_topic || '')}</div>
+<div class="btns"><button data-copy="topic">Copy name</button></div>
+<ol class="steps" start="3"><li>Tap <b>Subscribe</b> and allow notifications.</li><li>Tap the test button below. A notification should arrive within seconds.</li></ol>
+<form method="post" action="${base}/test"><div class="btns"><button class="btn primary">Send a test reminder</button></div></form>
+<form method="post" action="${base}/save">
+<label style="display:block;font-weight:600;margin:14px 0 4px">Remind me at (Amsterdam time)</label>
+<input name="remind_times" value="${esc(ch.remind_times || '')}" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);font:inherit;background:var(--card);color:var(--ink)">
+<p class="quiet" style="font-size:14px;margin:4px 0">Times separated by commas, e.g. 09:00,13:00,17:00</p>
+<label style="display:block;font-weight:600;margin:14px 0 4px">Only customers waiting longer than (hours)</label>
+<input name="remind_after_hours" type="number" min="0" step="0.5" value="${esc(ch.remind_after_hours ?? 3)}" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);font:inherit;background:var(--card);color:var(--ink)">
+<div class="btns"><button class="btn primary">Save reminder times</button></div></form>
+<p class="quiet" style="font-size:14px">The topic name works like a password: keep it to yourself.</p></section>
+
+<section class="card"><div class="who">2. Ask Claude about your WhatsApp</div>
+<p>Connect your own Claude app once. After that you can ask Claude things like <i>"Check my WhatsApp"</i>, <i>"Who haven't I answered?"</i> or <i>"Which machines did customers ask for this month?"</i></p>
+<ol class="steps"><li>On a computer, open <b>claude.ai</b> and log in.</li>
+<li>Click your name (bottom left) → <b>Settings</b> → <b>Connectors</b>.</li>
+<li>Click <b>Add custom connector</b>. Name: <b>WhatsApp Nedtrax</b>. URL: copy the link below.</li>
+<li>Click <b>Add</b>. It now works in Claude on your computer and on your phone.</li></ol>
+<div class="code" id="mcp">${esc(mcpUrl)}</div>
+<div class="btns"><button data-copy="mcp">Copy link</button></div>
+<p class="quiet" style="font-size:14px">This link gives access to your business chats. Do not share it. Claude can read, but never sends messages to customers.</p></section>
+</main>
+<script>document.addEventListener('click',async e=>{const b=e.target.closest('[data-copy]');if(!b)return;const t=document.getElementById(b.dataset.copy).textContent;
+try{await navigator.clipboard.writeText(t)}catch{const r=document.createRange();r.selectNode(document.getElementById(b.dataset.copy));getSelection().removeAllRanges();getSelection().addRange(r);document.execCommand('copy')}b.textContent='Copied'});</script>
+</body></html>`;
 }

@@ -42,7 +42,7 @@ ${ch.d360_api_key ? `<p class="hint">${stats.o || 0} open chats (${stats.u || 0}
 <label>Setup link for this number</label>
 <div class="linkbox"><input type="text" id="s-${esc(ch.id)}" value="${esc(setup)}" readonly><button data-copy="s-${esc(ch.id)}">Copy</button></div>
 <p class="hint">The person who uses this number opens this link to connect it, and gets their private inbox link there. ${ch.d360_api_key ? '' : '<a href="' + esc(setup) + '">Open it yourself</a> if this is your number.'}</p>
-<details><summary>Business knowledge for reply drafts</summary>
+<details><summary>Business knowledge</summary>
 <form method="post" action="${base}/ch/${esc(ch.id)}/knowledge"><textarea class="k" name="knowledge">${esc(ch.knowledge_text || '')}</textarea>
 <p class="hint">Claude only uses facts from this text. Paste your stock and price list and your standard answers here. Leave a line as TO FILL if unknown.</p>
 <div class="btns"><button class="btn primary">Save knowledge</button></div></form></details>
@@ -56,7 +56,8 @@ ${ch.d360_api_key ? `<div class="btns"><form method="post" action="${base}/ch/${
 <p class="hint">Do step 1 once. WhatsApp approves it within minutes to 24 hours. After that, summaries arrive every day by themselves.</p>` : '<p class="hint">Connect the number first.</p>'}
 </details>
 <details><summary>More</summary><div class="btns">
-<form method="post" action="${base}/ch/${esc(ch.id)}/test"><button>Test a reply draft</button></form>
+<form method="post" action="${base}/ch/${esc(ch.id)}/drafts"><button>${ch.drafts_enabled ? 'Switch reply drafts off' : 'Switch reply drafts on'}</button></form>
+<form method="post" action="${base}/ch/${esc(ch.id)}/test"><button>Test sorting</button></form>
 <form method="post" action="${base}/ch/${esc(ch.id)}/new-inbox" onsubmit="return confirm('Create a new inbox link? The old one stops working. The owner opens the setup link again to get the new one.')"><button>New inbox link</button></form>
 </div></details></section>`;
   }).join('');

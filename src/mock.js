@@ -12,7 +12,8 @@ const REPLY = {
   es: 'Hola, ¡gracias por su mensaje! La máquina está [disponible / vendida]. El precio es [precio]. ¿Cuándo le gustaría venir a verla?',
 };
 
-export function mockClassify(msgs) {
+const MACHINE_RE = /\b(volvo|caterpillar|cat|john deere|komatsu|toyota|yanmar|liebherr|jcb|hitachi|manitou)\b[\w\s-]{0,30}/i;
+export function mockClassify(msgs, channel = {}) {
   const last = [...msgs].reverse().find((m) => m.direction === 'in')?.text || '';
   const all = msgs.filter((m) => m.direction === 'in').map((m) => m.text).join(' ');
   const language = (LANG.find(([, re]) => re.test(all)) || ['en'])[0];
@@ -26,11 +27,15 @@ export function mockClassify(msgs) {
   const urgent = ['machine_inquiry', 'supplier'].includes(category);
   const source = /https?:\/\//.test(all) ? 'website_or_marketplace' : 'direct';
   const noDraft = ['personal', 'spam_ads'].includes(category);
+  const mm = all.match(MACHINE_RE);
+  const machines = mm && ['machine_inquiry', 'supplier'].includes(category) ? [{ machine: mm[0].trim(), details: '' }] : [];
+  const drafts = !!channel.drafts_enabled;
   return {
-    category, urgent, language, source,
+    category, urgent, language, source, machines, country: '',
+    needs_reply: !noDraft && !/^(ok|thanks|thank you|bedankt|merci|gracias)[.! ]*$/i.test(last.trim()),
     summary: category === 'personal' ? 'Personal message' : `[mock] ${last.slice(0, 80)}`,
-    draft: noDraft ? '' : REPLY[language],
-    needs_info: noDraft ? [] : ['Availability', 'Price'],
+    draft: noDraft || !drafts ? '' : REPLY[language],
+    needs_info: noDraft || !drafts ? [] : ['Availability', 'Price'],
   };
 }
 

@@ -64,8 +64,23 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS items_open ON items(channel_id, status);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS requests (       -- machines customers asked for (kept 1 year)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  contact TEXT NOT NULL,
+  name TEXT,
+  country TEXT,
+  machine TEXT NOT NULL,
+  details TEXT,
+  first_ts INTEGER NOT NULL,
+  last_ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS requests_ch ON requests(channel_id, last_ts);
 `);
-for (const col of ['knowledge_text TEXT', 'inbox_revealed INTEGER DEFAULT 0']) {
+for (const col of ['knowledge_text TEXT', 'inbox_revealed INTEGER DEFAULT 0',
+  // Mounir's way of working (Nov 2026): no reply drafts by default, reminders on the phone instead.
+  'drafts_enabled INTEGER DEFAULT 0', 'ntfy_topic TEXT', "remind_times TEXT DEFAULT '09:00,13:00,17:00'",
+  'remind_after_hours REAL DEFAULT 3', 'last_remind_slot TEXT', 'mcp_token TEXT']) {
   try { db.exec(`ALTER TABLE channels ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 export const getSetting = (k) => db.prepare('SELECT value FROM settings WHERE key = ?').get(k)?.value ?? null;
@@ -102,6 +117,7 @@ export function addPrivate(channelId, phone, note = null) {
   db.prepare('INSERT OR IGNORE INTO private_contacts (channel_id, phone, note) VALUES (?,?,?)').run(channelId, p, note);
   // Forget everything stored about this contact.
   db.prepare('DELETE FROM messages WHERE channel_id = ? AND contact = ?').run(channelId, p);
+  db.prepare('DELETE FROM requests WHERE channel_id = ? AND contact = ?').run(channelId, p);
   db.prepare('DELETE FROM items WHERE channel_id = ? AND contact = ?').run(channelId, p);
 }
 export const removePrivate = (channelId, phone) =>
@@ -121,6 +137,26 @@ export function purgeOld(days) {
   const cutoff = now() - days * 86400000;
   db.prepare('DELETE FROM messages WHERE ts < ?').run(cutoff);
   db.prepare("DELETE FROM items WHERE status IN ('done','personal') AND updated_at < ?").run(cutoff);
+  db.prepare('DELETE FROM requests WHERE last_ts < ?').run(now() - 365 * 86400000);
   // Items flagged personal are only kept a day so he can correct a wrong guess.
   db.prepare("DELETE FROM items WHERE status = 'personal' AND updated_at < ?").run(now() - 86400000);
 }
+
+/** Remember a machine a customer asked for; the same machine from the same customer within 30 days is one row. */
+export function saveRequest({ channelId, contact, name, country, machine, details, ts }) {
+  const m = String(machine || '').trim().slice(0, 120);
+  if (!m) return;
+  const prev = db.prepare('SELECT id FROM requests WHERE channel_id = ? AND contact = ? AND lower(machine) = lower(?) AND last_ts > ?')
+    .get(channelId, contact, m, ts - 30 * 86400000);
+  if (prev) db.prepare('UPDATE requests SET last_ts = ?, details = COALESCE(?, details), name = COALESCE(?, name), country = COALESCE(?, country) WHERE id = ?')
+    .run(ts, details || null, name || null, country || null, prev.id);
+  else db.prepare('INSERT INTO requests (channel_id, contact, name, country, machine, details, first_ts, last_ts) VALUES (?,?,?,?,?,?,?,?)')
+    .run(channelId, contact, name || null, country || null, m, details ? String(details).slice(0, 300) : null, ts, ts);
+}
+export const listRequests = (channelId, sinceTs = 0) =>
+  db.prepare('SELECT * FROM requests WHERE channel_id = ? AND last_ts >= ? ORDER BY last_ts DESC').all(channelId, sinceTs);
+export function ensureMcpToken(ch) {
+  if (!ch.mcp_token) { ch.mcp_token = token(); updateChannel(ch.id, { mcp_token: ch.mcp_token }); }
+  return ch.mcp_token;
+}
+export const getChannelByMcp = (t) => (t ? db.prepare('SELECT * FROM channels WHERE mcp_token = ?').get(t) : null);

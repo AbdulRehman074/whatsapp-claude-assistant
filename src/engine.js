@@ -1,4 +1,4 @@
-import { db, now, saveMessage, isPrivate, recentMessages, updateChannel, listChannels, purgeOld, digits } from './db.js';
+import { db, now, saveMessage, isPrivate, recentMessages, updateChannel, listChannels, purgeOld, digits, saveRequest, token } from './db.js';
 import { classifyAndDraft, dailySummary } from './claude.js';
 import { sendText, sendTemplate } from './provider360.js';
 import { config } from './config.js';
@@ -60,15 +60,20 @@ export async function draftItem(channel, item) {
   if (!msgs.length) { db.prepare('DELETE FROM items WHERE id = ?').run(item.id); return; }
   try {
     const r = await classifyAndDraft(channel, msgs, { name: item.name, contact: item.contact });
-    const status = r.category === 'personal' ? 'personal' : (r.category === 'spam_ads' ? 'done' : 'open');
+    const status = r.category === 'personal' ? 'personal' : (r.category === 'spam_ads' || !r.needs_reply ? 'done' : 'open');
+    const reason = r.category === 'spam_ads' ? 'spam' : (status === 'done' ? 'no_reply_needed' : null);
     db.prepare(`UPDATE items SET status = ?, category = ?, urgent = ?, language = ?, source = ?, summary = ?, draft = ?, needs_info = ?,
                 done_reason = ?, error = NULL, updated_at = ? WHERE id = ?`)
       .run(status, r.category, r.urgent ? 1 : 0, r.language, r.source, r.summary, r.draft || '', JSON.stringify(r.needs_info || []),
-        r.category === 'spam_ads' ? 'spam' : null, now(), item.id);
+        reason, now(), item.id);
+    if (['machine_inquiry', 'supplier', 'existing_customer', 'other_business'].includes(r.category)) {
+      for (const m of r.machines) saveRequest({ channelId: channel.id, contact: item.contact, name: item.name, country: r.country || null,
+        machine: m.machine, details: m.details || null, ts: item.last_msg_ts || now() });
+    }
     log(`drafted item ${item.id} (${channel.id}) -> ${r.category}${r.urgent ? ' URGENT' : ''} [${r.language}]`);
   } catch (err) {
     // Keep it visible in the inbox instead of losing it; retried on the next "Redo draft" tap.
-    db.prepare("UPDATE items SET status = 'open', category = COALESCE(category,'other_business'), summary = COALESCE(summary,'New message (draft failed, open WhatsApp)'), error = ?, updated_at = ? WHERE id = ?")
+    db.prepare("UPDATE items SET status = 'open', category = COALESCE(category,'other_business'), summary = COALESCE(summary,'New message (could not be read automatically, open WhatsApp)'), error = ?, updated_at = ? WHERE id = ?")
       .run(String(err.message).slice(0, 300), now(), item.id);
     log(`draft failed for item ${item.id}:`, err.message);
   }
@@ -93,7 +98,7 @@ export async function sendSummary(channel, { force = false } = {}) {
   let mode;
   if (windowOpen) {
     const text = await dailySummary(channel, items, lp.label);
-    await sendText(channel.d360_api_key, channel.summary_to, `${text}\n\nInbox with reply drafts: ${link}`);
+    await sendText(channel.d360_api_key, channel.summary_to, `${text}\n\nYour inbox: ${link}`);
     mode = 'text';
   } else {
     // Outside the 24h window WhatsApp only allows an approved template.
@@ -115,9 +120,53 @@ export async function summaryTick() {
   }
 }
 
+// ---------- reminders (push notification through the free ntfy app) ----------
+export async function pushNotify(channel, { title, body, click }) {
+  if (!channel.ntfy_topic) return { skipped: 'no topic' };
+  const url = `${config.ntfyBase}/${channel.ntfy_topic}`;
+  if (config.dryRunSend) { log(`[DRY_RUN_SEND] push ${url}`, title, body); return { ok: true, dryRun: true, body }; }
+  // HTTP headers must be plain ASCII; names with accents stay intact in the body.
+  const res = await fetch(url, { method: 'POST', headers: { Title: title.replace(/[^\x20-\x7e]/g, ''), Tags: 'bell', Priority: 'high', ...(click ? { Click: click } : {}) }, body });
+  if (!res.ok) throw new Error(`ntfy ${res.status}`);
+  return { ok: true };
+}
+
+export function waitingItems(channel, minHours = 0) {
+  return db.prepare("SELECT * FROM items WHERE channel_id = ? AND status = 'open' AND last_msg_ts <= ? ORDER BY urgent DESC, last_msg_ts ASC")
+    .all(channel.id, now() - minHours * 3600 * 1000);
+}
+const waitLabel = (ts) => { const h = (now() - ts) / 3600000; return h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} days`; };
+
+export async function sendReminder(channel, { force = false } = {}) {
+  const list = waitingItems(channel, force ? 0 : (channel.remind_after_hours ?? 3));
+  if (!list.length) return { skipped: 'nobody waiting' };
+  const lines = list.slice(0, 8).map((i) => `• ${i.name || '+' + i.contact}: ${String(i.summary || '').slice(0, 70)} (${waitLabel(i.last_msg_ts)})`);
+  if (list.length > 8) lines.push(`… and ${list.length - 8} more`);
+  const title = `${list.length} customer${list.length > 1 ? 's' : ''} waiting for your answer`;
+  return pushNotify(channel, { title, body: lines.join('\n'), click: `${config.publicUrl}/inbox/${channel.inbox_token}` });
+}
+
+export async function reminderTick() {
+  const lp = localParts();
+  for (const ch of listChannels()) {
+    if (!ch.ntfy_topic) continue;
+    const slots = String(ch.remind_times || '').split(',').map((x) => x.trim()).filter((x) => /^\d\d:\d\d$/.test(x)).sort();
+    const due = slots.filter((x) => x <= lp.hm).pop();
+    if (!due) continue;
+    const key = `${lp.date} ${due}`;
+    if (ch.last_remind_slot === key) continue;
+    updateChannel(ch.id, { last_remind_slot: key });
+    const [h, m] = due.split(':').map(Number); const [nh, nm] = lp.hm.split(':').map(Number);
+    if ((nh * 60 + nm) - (h * 60 + m) > 30) continue; // server was asleep: skip old slots instead of sending late
+    try { const r = await sendReminder(ch); log(`reminder ${ch.id} ${key}:`, r.skipped || 'sent'); } catch (e) { log(`reminder failed for ${ch.id}:`, e.message); }
+  }
+}
+export const ensureTopic = (ch) => { if (!ch.ntfy_topic) { ch.ntfy_topic = `nedtrax-${token(15).replace(/[^A-Za-z0-9]/g, '')}`; updateChannel(ch.id, { ntfy_topic: ch.ntfy_topic }); } return ch.ntfy_topic; };
+
 export function startLoops() {
   setInterval(() => processPending().catch((e) => log('processPending', e.message)), 10_000);
   setInterval(() => summaryTick().catch((e) => log('summaryTick', e.message)), 60_000);
+  setInterval(() => reminderTick().catch((e) => log('reminderTick', e.message)), 60_000);
   setInterval(() => purgeOld(config.retentionDays), 3600_000);
   purgeOld(config.retentionDays);
 }
