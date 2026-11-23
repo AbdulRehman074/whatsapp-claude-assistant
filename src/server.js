@@ -9,7 +9,7 @@ import { parseWebhook, setWebhook } from './provider360.js';
 import { handleEvents, draftItem, startLoops } from './engine.js';
 import { renderInbox, renderPrivate, renderSetup, renderMachines, machinesCsv, renderTools } from './inbox.js';
 import { handleMcpHttp } from './mcp.js';
-import { broadcastRoute } from './broadcast.js';
+import { broadcastRoute, getMedia, SAMPLE_JPG, purgeMedia } from './broadcast.js';
 import { getChannelByMcp } from './db.js';
 import { ensureTopic, sendReminder } from './engine.js';
 
@@ -39,6 +39,14 @@ export function createServer() {
       const parts = url.pathname.split('/').filter(Boolean);
 
       if (url.pathname === '/health') return send(res, 200, 'ok', 'text/plain');
+
+      // --- Broadcast photos: /media/<random id>. Public on purpose so WhatsApp can fetch them; ids are unguessable, kept 30 days.
+      if (parts[0] === 'media' && parts.length === 2) {
+        if (parts[1] === 'sample.jpg' && SAMPLE_JPG) return send(res, 200, SAMPLE_JPG, 'image/jpeg', { 'cache-control': 'public, max-age=86400' });
+        const m = getMedia(parts[1]);
+        if (!m) return send(res, 404, 'not found', 'text/plain');
+        return send(res, 200, Buffer.from(m.data), m.mime, { 'cache-control': 'public, max-age=86400' });
+      }
 
       // --- Webhook: POST /webhook/<channelId>/<secret>
       if (parts[0] === 'webhook' && parts.length === 3) {
@@ -224,5 +232,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`WhatsApp assistant on :${config.port} (${config.mockClaude ? 'MOCK Claude' : config.model})${config.dryRunSend ? ' DRY_RUN_SEND' : ''}`);
     if (!config.anthropicKey && !config.mockClaude) console.warn('WARNING: ANTHROPIC_API_KEY is empty - drafts will fail.');
   });
-  startLoops();
+  startLoops(); setInterval(() => { try { purgeMedia(); } catch {} }, 3600_000);
 }

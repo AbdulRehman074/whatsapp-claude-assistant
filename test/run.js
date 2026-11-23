@@ -197,6 +197,23 @@ assert.equal(sres.status, 303);
 await new Promise((r) => setTimeout(r, 100));
 const bs = db.prepare('SELECT * FROM bsends ORDER BY id DESC').get();
 assert.equal(bs.sent, 1); assert.equal(bs.status, 'done'); assert.ok(bs.text.includes(' · '), 'line breaks flattened');
+// Photo broadcast: picture stored, served publicly, sent with the photo template
+const bhtml2 = await (await fetch(`${base}/inbox/${tok}/broadcast?list=${spain.id}`)).text();
+assert.ok(bhtml2.includes('id="pic"'), 'photo picker shown when photo format approved');
+const jpg = (await import('node:fs')).readFileSync(new URL('../assets/sample.jpg', import.meta.url));
+const pres = await fetch(`${base}/inbox/${tok}/broadcast/send`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  body: new URLSearchParams({ list: String(spain.id), text: 'Komatsu PW180 with photo', photo: 'data:image/jpeg;base64,' + jpg.toString('base64') }).toString() });
+assert.equal(pres.status, 303);
+await new Promise((r) => setTimeout(r, 100));
+const ps = db.prepare('SELECT * FROM bsends ORDER BY id DESC').get();
+assert.ok(ps.photo && ps.sent === 1, 'photo send recorded');
+const media = await fetch(`${base}/media/${ps.photo}`);
+assert.equal(media.status, 200); assert.equal(media.headers.get('content-type'), 'image/jpeg');
+assert.equal((await fetch(`${base}/media/sample.jpg`)).status, 200);
+assert.equal((await fetch(`${base}/media/nope.jpg`)).status, 404);
+const bad = await fetch(`${base}/inbox/${tok}/broadcast/send`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  body: new URLSearchParams({ list: String(spain.id), text: 'x', photo: 'data:text/html;base64,PGI+' }).toString() });
+assert.ok(decodeURIComponent(bad.headers.get('location')).includes('could not be used'));
 console.log('\nNEW FEATURES OK');
 
 if (process.argv.includes('--keep')) { console.log(`\nServer kept running: ${base}/inbox/${tok}`); }
